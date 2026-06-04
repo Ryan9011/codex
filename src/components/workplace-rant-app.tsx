@@ -169,6 +169,49 @@ const moodLevels = [
   },
 ];
 
+function getFriendlyAuthError(message: string) {
+  const normalizedMessage = message.toLowerCase();
+
+  if (
+    normalizedMessage.includes("email rate limit") ||
+    normalizedMessage.includes("over_email_send_rate_limit") ||
+    normalizedMessage.includes("security purposes") ||
+    normalizedMessage.includes("rate limit")
+  ) {
+    return "确认邮件发送太频繁了，请先等 1 分钟再试。如果已经收到邮件，直接点击确认链接，不用重复注册。";
+  }
+
+  if (
+    normalizedMessage.includes("email not confirmed") ||
+    normalizedMessage.includes("email_not_confirmed")
+  ) {
+    return "邮箱还没确认，请先打开 Supabase 发出的确认邮件，确认后再登录。";
+  }
+
+  if (
+    normalizedMessage.includes("invalid login credentials") ||
+    normalizedMessage.includes("invalid_credentials")
+  ) {
+    return "邮箱或密码不对，或者账号还没完成邮箱确认。";
+  }
+
+  if (
+    normalizedMessage.includes("email address") &&
+    normalizedMessage.includes("invalid")
+  ) {
+    return "这个邮箱地址被 Supabase 判定无效，请换一个常用邮箱再试。";
+  }
+
+  if (
+    normalizedMessage.includes("already registered") ||
+    normalizedMessage.includes("user already registered")
+  ) {
+    return "这个邮箱已经注册过了，请切换到登录。";
+  }
+
+  return message;
+}
+
 export function WorkplaceRantApp() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [session, setSession] = useState<Session | null>(null);
@@ -194,6 +237,7 @@ export function WorkplaceRantApp() {
   const [isComposerOpen, setComposerOpen] = useState(false);
   const [isLoadingPosts, setLoadingPosts] = useState(false);
   const [isLoadingComments, setLoadingComments] = useState(false);
+  const [isAuthSubmitting, setAuthSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -377,54 +421,70 @@ export function WorkplaceRantApp() {
   async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    if (isAuthSubmitting) {
+      return;
+    }
+
     if (!supabase) {
       setErrorMessage("Supabase 尚未配置。");
       return;
     }
 
+    const email = authDraft.email.trim();
+
+    if (!email || !authDraft.password) {
+      setErrorMessage("邮箱和密码都要填写，工位通行证才办得下来。");
+      return;
+    }
+
     setErrorMessage("");
     setStatusMessage("");
+    setAuthSubmitting(true);
 
-    if (authDraft.mode === "sign-up") {
-      if (!authDraft.username.trim()) {
-        setErrorMessage("注册时请填写一个用户名。");
+    try {
+      if (authDraft.mode === "sign-up") {
+        if (!authDraft.username.trim()) {
+          setErrorMessage("注册时请填写一个用户名。");
+          return;
+        }
+
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password: authDraft.password,
+          options: {
+            data: {
+              username: authDraft.username.trim(),
+            },
+          },
+        });
+
+        if (error) {
+          setErrorMessage(getFriendlyAuthError(error.message));
+          return;
+        }
+
+        setStatusMessage(
+          data.session
+            ? "注册成功，欢迎入座赛博工位。"
+            : "注册成功，请先按 Supabase 邮件设置完成邮箱确认。",
+        );
         return;
       }
 
-      const { data, error } = await supabase.auth.signUp({
-        email: authDraft.email.trim(),
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
         password: authDraft.password,
-        options: {
-          data: {
-            username: authDraft.username.trim(),
-          },
-        },
       });
 
       if (error) {
-        setErrorMessage(error.message);
+        setErrorMessage(getFriendlyAuthError(error.message));
         return;
       }
 
-      setStatusMessage(
-        data.session
-          ? "注册成功，欢迎入座赛博工位。"
-          : "注册成功，请先按 Supabase 邮件设置完成邮箱确认。",
-      );
-      return;
+      setStatusMessage("登录成功，工位已同步。");
+    } finally {
+      setAuthSubmitting(false);
     }
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email: authDraft.email.trim(),
-      password: authDraft.password,
-    });
-
-    if (error) {
-      setErrorMessage(error.message);
-      return;
-    }
-
-    setStatusMessage("登录成功，工位已同步。");
   }
 
   async function handleSignOut() {
@@ -706,6 +766,7 @@ export function WorkplaceRantApp() {
 
         <RightSidebar
           authDraft={authDraft}
+          isAuthSubmitting={isAuthSubmitting}
           profile={profile}
           trendingPosts={trendingPosts}
           user={user}
@@ -1212,6 +1273,7 @@ function PostCard({
 
 function RightSidebar({
   authDraft,
+  isAuthSubmitting,
   profile,
   trendingPosts,
   user,
@@ -1220,6 +1282,7 @@ function RightSidebar({
   onSignOut,
 }: {
   authDraft: AuthDraft;
+  isAuthSubmitting: boolean;
   profile: Profile | null;
   trendingPosts: Post[];
   user: User | null;
@@ -1231,6 +1294,7 @@ function RightSidebar({
     <aside className="sticky top-[92px] hidden h-[calc(100vh-6.5rem)] space-y-4 overflow-y-auto lg:block">
       <AuthPanel
         authDraft={authDraft}
+        isSubmitting={isAuthSubmitting}
         profile={profile}
         user={user}
         onAuthDraftChange={onAuthDraftChange}
@@ -1310,6 +1374,7 @@ function RightSidebar({
 
 function AuthPanel({
   authDraft,
+  isSubmitting,
   profile,
   user,
   onAuthDraftChange,
@@ -1317,6 +1382,7 @@ function AuthPanel({
   onSignOut,
 }: {
   authDraft: AuthDraft;
+  isSubmitting: boolean;
   profile: Profile | null;
   user: User | null;
   onAuthDraftChange: (draft: AuthDraft) => void;
@@ -1362,11 +1428,12 @@ function AuthPanel({
             ["sign-up", "注册"],
           ].map(([mode, label]) => (
             <button
-              className={`h-9 rounded-md text-sm font-semibold transition ${
+              className={`h-9 rounded-md text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
                 authDraft.mode === mode
                   ? "bg-cyan-300 text-slate-950"
                   : "text-slate-300 hover:bg-white/[0.06]"
               }`}
+              disabled={isSubmitting}
               key={mode}
               onClick={() =>
                 onAuthDraftChange({ ...authDraft, mode: mode as AuthDraft["mode"] })
@@ -1380,7 +1447,8 @@ function AuthPanel({
 
         {authDraft.mode === "sign-up" ? (
           <input
-            className="h-11 w-full rounded-lg border border-cyan-300/20 bg-white/[0.06] px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-300/60"
+            className="h-11 w-full rounded-lg border border-cyan-300/20 bg-white/[0.06] px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-300/60 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isSubmitting}
             onChange={(event) =>
               onAuthDraftChange({ ...authDraft, username: event.target.value })
             }
@@ -1390,7 +1458,8 @@ function AuthPanel({
         ) : null}
 
         <input
-          className="h-11 w-full rounded-lg border border-cyan-300/20 bg-white/[0.06] px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-300/60"
+          className="h-11 w-full rounded-lg border border-cyan-300/20 bg-white/[0.06] px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-300/60 disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={isSubmitting}
           onChange={(event) =>
             onAuthDraftChange({ ...authDraft, email: event.target.value })
           }
@@ -1399,7 +1468,8 @@ function AuthPanel({
           value={authDraft.email}
         />
         <input
-          className="h-11 w-full rounded-lg border border-cyan-300/20 bg-white/[0.06] px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-300/60"
+          className="h-11 w-full rounded-lg border border-cyan-300/20 bg-white/[0.06] px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-300/60 disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={isSubmitting}
           onChange={(event) =>
             onAuthDraftChange({ ...authDraft, password: event.target.value })
           }
@@ -1409,10 +1479,17 @@ function AuthPanel({
         />
 
         <button
-          className="inline-flex h-11 w-full items-center justify-center rounded-lg bg-gradient-to-r from-cyan-300 to-fuchsia-400 text-sm font-semibold text-slate-950"
+          className="inline-flex h-11 w-full items-center justify-center rounded-lg bg-gradient-to-r from-cyan-300 to-fuchsia-400 text-sm font-semibold text-slate-950 transition disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={isSubmitting}
           type="submit"
         >
-          {authDraft.mode === "sign-up" ? "创建账号" : "登录工位"}
+          {isSubmitting
+            ? authDraft.mode === "sign-up"
+              ? "正在发送确认邮件..."
+              : "正在登录..."
+            : authDraft.mode === "sign-up"
+              ? "创建账号"
+              : "登录工位"}
         </button>
       </form>
     </div>
